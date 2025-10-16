@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Heart Particle Scene</title>
+<style>
+  :root{
+    --width: 100%;
+    --height: 100vh;
+    --bg: #000;
+    --bubble-bg: #4b30ff;
+    --bubble-text: #fff;
+    --glass: rgba(255,255,255,0.06);
+  }
+  html,body{
+    margin:0;
+    padding:0;
+    width:100%;
+    height:100%;
+    background: var(--bg);
+    font-family: 'Poppins', system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+    -webkit-font-smoothing:antialiased;
+    -moz-osx-font-smoothing:grayscale;
+    overflow:hidden;
+    color:#fff;
+  }
+
+  /* container that holds canvases and UI */
+  .scene {
+    position:relative;
+    width:100%;
+    height:100%;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+  }
+
+  canvas {
+    position:absolute;
+    width:100%;
+    height:100%;
+    top:0;
+    left:0;
+    display:block;
+  }
+
+  /* overlay UI */
+  .ui {
+    position:absolute;
+    inset:0;
+    pointer-events:none;
+  }
+
+  /* chat bubble bottom-right */
+  .chat {
+    position:absolute;
+    right:28px;
+    bottom:28px;
+    pointer-events:auto;
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+    align-items:flex-end;
+    z-index:30;
+  }
+  .bubble {
+    background: var(--bubble-bg);
+    color:var(--bubble-text);
+    padding:12px 16px;
+    border-radius:18px 18px 6px 18px;
+    max-width:280px;
+    box-shadow: 0 8px 24px rgba(75,48,255,0.25);
+    font-size:14px;
+    line-height:1.3;
+  }
+
+  /* small translucent input */
+  .input-wrap {
+    display:flex;
+    gap:8px;
+    align-items:center;
+    background:var(--glass);
+    padding:8px;
+    border-radius:22px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    width:320px;
+  }
+  .input-wrap .dot {
+    width:8px;height:8px;border-radius:50%;background:#6b6b6b;
+  }
+  .input-placeholder {
+    color:#bdbdbd;
+    font-size:13px;
+    padding:6px 8px;
+    flex:1;
+  }
+
+  /* center small reflector text */
+  .center-text {
+    position:absolute;
+    bottom:34%;
+    left:50%;
+    transform:translateX(-50%);
+    text-align:center;
+    pointer-events:none;
+    z-index:20;
+    width:90%;
+    max-width:700px;
+  }
+  .center-text .headline {
+    font-weight:600;
+    font-size:18px;
+    letter-spacing:0.6px;
+    opacity:0.95;
+    margin-bottom:8px;
+  }
+
+  /* small instruction top-left */
+  .hint {
+    position:absolute;
+    top:18px;
+    left:18px;
+    font-size:13px;
+    color:#a8a8a8;
+    z-index:40;
+  }
+
+  /* responsiveness */
+  @media (max-width:420px){
+    .bubble { max-width:230px; font-size:13px; }
+    .input-wrap { width:240px; }
+  }
+</style>
+</head>
+<body>
+  <div class="scene" id="scene">
+    <!-- main canvas for heart & particles -->
+    <canvas id="mainCanvas"></canvas>
+    <!-- reflection canvas (mirrored / blurred) -->
+    <canvas id="reflectionCanvas"></canvas>
+
+    <div class="ui">
+      <div class="hint">Chúc mừng! Màn hình hiện ra sau khi quét QR</div>
+
+      <div class="center-text" aria-hidden="true">
+        <div class="headline">Yêu em nhiều</div>
+      </div>
+
+      <div class="chat" aria-hidden="true">
+        <div class="bubble">Anh xin lỗi em nhiều...<br>Mình quay lại em nhé</div>
+        <div class="input-wrap">
+          <div class="dot"></div>
+          <div class="input-placeholder">Nhắn tin...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+/*
+  Heart particle scene
+  - Draw heart-shaped particle cloud using polar equation sampling
+  - Add motion, twinkle, and a mirrored reflection canvas with vertical blur
+  - Simple floating text particles (words) falling then reflecting
+*/
+
+// helpers
+const rand = (a,b) => a + Math.random()*(b-a);
+const TAU = Math.PI*2;
+
+// setup canvases
+const mainC = document.getElementById('mainCanvas');
+const reflC = document.getElementById('reflectionCanvas');
+const dpr = Math.max(1, window.devicePixelRatio || 1);
+const canvases = [mainC, reflC];
+
+function resize(){
+  canvases.forEach(c=>{
+    c.width = window.innerWidth * dpr;
+    c.height = window.innerHeight * dpr;
+    c.style.width = window.innerWidth + 'px';
+    c.style.height = window.innerHeight + 'px';
+  });
+}
+resize();
+window.addEventListener('resize', ()=>{ resize(); initParticles(); });
+
+// contexts
+const ctx = mainC.getContext('2d');
+const rctx = reflC.getContext('2d');
+
+// particle store
+let particles = [];
+let words = [];
+
+// heart param function
+// Using implicit heart curve in polar coords r = a(1 - sinθ) to shape a heart-like region
+function heartPoint(t, scale=1){
+  // t: 0..TAU
+  // convert to x,y roughly heart-shaped with adjustments
+  // We'll use classic parametric heart:
+  // x = 16 sin^3 t
+  // y = 13 cos t - 5 cos 2t - 2 cos3t - cos4t
+  const s = Math.sin(t), c = Math.cos(t);
+  const x = 16 * Math.pow(s,3);
+  const y = 13 * c - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t);
+  return {x: x * scale, y: -y * scale}; // invert y so heart points down earlier then move up via offset
+}
+
+// initialize particles
+function initParticles(){
+  particles = [];
+  words = [];
+  const W = mainC.width, H = mainC.height;
+  // choose scale based on smaller dimension
+  const size = Math.min(W,H) / (dpr*22); // tune
+  const cx = W/2, cy = H/3; // center slightly upper
+
+  // scatter particles along param t
+  const total = Math.floor(1400); // number of particles
+  for(let i=0;i<total;i++){
+    // sample t with bias toward edges
+    const t = Math.random()*TAU;
+    const p = heartPoint(t, size);
+    // add jitter radius
+    const jitterR = rand(0, 12) * (Math.random()**1.5);
+    // random angle
+    const ang = rand(0,TAU);
+    const px = cx + p.x + Math.cos(ang)*jitterR;
+    const py = cy + p.y + Math.sin(ang)*jitterR;
+
+    particles.push({
+      x: px,
+      y: py,
+      baseX: px,
+      baseY: py,
+      vx: rand(-0.02,0.02),
+      vy: rand(-0.04,0.04),
+      life: rand(5,16),
+      t: rand(0,TAU),
+      size: rand(0.6,2.6),
+      hue: rand(300,350),
+      alpha: rand(0.6,1),
+      wobble: rand(0.002,0.007)
+    });
+  }
+
+  // small words that fall from heart and reflect
+  const wordList = ['Yêu','em','nhiều','Thương','quay','lại','Anh','xin lỗi','mình'];
+  for(let i=0;i<80;i++){
+    const t = rand(0,TAU);
+    const p = heartPoint(t, size);
+    const px = cx + p.x + rand(-15,15);
+    const py = cy + p.y + rand(8,40);
+    words.push({
+      x:px, y:py,
+      vx:rand(-0.2,0.2), vy:rand(0.25,1.2),
+      text: wordList[Math.floor(rand(0,wordList.length))],
+      size: rand(10,20),
+      alpha: rand(0.6,0.95),
+      rot: rand(-0.15,0.15)
+    });
+  }
+}
+initParticles();
+
+// animation
+let last = performance.now();
+let mouse = {x:0,y:0};
+window.addEventListener('mousemove', (e)=>{
+  mouse.x = e.clientX; mouse.y = e.clientY;
+});
+
+// main draw loop
+function draw(now){
+  const dt = Math.min(60, now - last) / 1000;
+  last = now;
+
+  const W = mainC.width, H = mainC.height;
+
+  // clear main
+  ctx.clearRect(0,0,W,H);
+
+  // subtle starfield background
+  ctx.save();
+  ctx.globalCompositeOperation = 'source-over';
+  for(let s=0;s<3;s++){
+    // draw some faint tiny stars randomly but deterministic per frame? we add few
+    if(Math.random() < 0.03){
+      ctx.fillStyle = 'rgba(255,255,255,0.02)';
+      const sx = Math.random()*W, sy = Math.random()*(H*0.9);
+      ctx.fillRect(sx,sy,1*dpr,1*dpr);
+    }
+  }
+  ctx.restore();
+
+  // draw particles (heart cloud)
+  for(let i=0;i<particles.length;i++){
+    const p = particles[i];
+    // animate slight outward motion and wobble
+    p.t += p.wobble * dt * 60;
+    // push outward slowly
+    const ox = (p.baseX - W/2) * 0.0006;
+    const oy = (p.baseY - H/3) * 0.0006;
+    p.x += (ox + p.vx) * dt * 60;
+    p.y += (oy + p.vy) * dt * 60 + Math.sin(p.t)*0.02*60*dt;
+
+    // twinkle alpha
+    const a = p.alpha * (0.7 + 0.3*Math.sin(p.t*3));
+
+    // gradient dot
+    const grd = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.size*6*dpr);
+    const color1 = `hsla(${p.hue},85%,60%,${a})`;
+    const color2 = `hsla(${p.hue-20},60%,40%,${a*0.12})`;
+    grd.addColorStop(0, color1);
+    grd.addColorStop(0.5, color2);
+    grd.addColorStop(1, 'transparent');
+
+    ctx.beginPath();
+    ctx.fillStyle = grd;
+    ctx.arc(p.x, p.y, p.size * dpr, 0, TAU);
+    ctx.fill();
+  }
+
+  // draw small falling words
+  ctx.save();
+  ctx.font = `${12*dpr}px Poppins, Arial`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for(let i=0;i<words.length;i++){
+    const w = words[i];
+    w.x += w.vx * dt * 60;
+    w.y += w.vy * dt * 60;
+    w.vy += 0.02 * dt * 60; // gravity small
+
+    if(w.y > H*0.95){
+      // reset to top near heart
+      w.y = H*0.33 + rand(0,40);
+      w.x = W/2 + rand(-120,120);
+      w.vy = rand(0.2,1.0);
+    }
+
+    ctx.save();
+    ctx.translate(w.x, w.y);
+    ctx.rotate(w.rot);
+    ctx.globalAlpha = w.alpha * (0.6 + 0.4*Math.sin((now+i*13)*0.002));
+    ctx.fillStyle = 'rgba(255,255,255,0.95)';
+    ctx.font = `${w.size*dpr}px Poppins, Arial`;
+    ctx.fillText(w.text, 0, 0);
+    ctx.restore();
+  }
+  ctx.restore();
+
+  // create reflection by copying a portion to reflection canvas
+  // We'll render reflection by copying the bottom area (below midline) flipped vertically,
+  // applying vertical scale and alpha gradient to mimic water reflection.
+  createReflection();
+
+  requestAnimationFrame(draw);
+}
+
+function createReflection(){
+  // We'll draw a mirrored version into rctx
+  const W = mainC.width, H = mainC.height;
+  // clear reflection
+  rctx.clearRect(0,0,W,H);
+
+  // take a region around center where heart sits (roughly top half)
+  const srcX = 0, srcY = Math.floor(H*0.18), srcW = W, srcH = Math.floor(H*0.6);
+
+  // draw flipped
+  rctx.save();
+  // flip vertically
+  rctx.translate(0, srcY*2 + srcH);
+  rctx.scale(1, -1);
+  // reduce opacity so reflection is dim
+  rctx.globalAlpha = 0.38;
+  rctx.drawImage(mainC, srcX, srcY, srcW, srcH, 0, srcY, srcW, srcH);
+  rctx.restore();
+
+  // overlay gradient fade and slight blur effect (simulate watery blur with composite)
+  // gradient mask to fade out below
+  const g = rctx.createLinearGradient(0, srcY, 0, H);
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(0.35, 'rgba(0,0,0,0.05)');
+  g.addColorStop(0.8, 'rgba(0,0,0,0.5)');
+  rctx.fillStyle = g;
+  rctx.fillRect(0, srcY, W, H-srcY);
+
+  // small ripple lines by global composite
+  rctx.save();
+  rctx.globalCompositeOperation = 'lighter';
+  for(let i=0;i<6;i++){
+    const y = srcY + i*(srcH/10) + (Math.sin((performance.now()/1000) + i)*6);
+    rctx.beginPath();
+    rctx.moveTo(0,y);
+    rctx.lineTo(W, y+Math.sin((performance.now()/800)+i)*8);
+    rctx.strokeStyle = 'rgba(255,255,255,0.02)';
+    rctx.lineWidth = 1 * dpr;
+    rctx.stroke();
+  }
+  rctx.restore();
+
+  // small gaussian-like blur simulation: draw multiple low-alpha copies offset - crude blur
+  const blurCount = 3;
+  for(let b=1;b<=blurCount;b++){
+    rctx.globalAlpha = 0.05;
+    rctx.drawImage(reflC, 0, 0, W, H, -b*1, 0, W, H);
+    rctx.drawImage(reflC, 0, 0, W, H, b*1, 0, W, H);
+  }
+
+  // darken bottom area a bit
+  rctx.fillStyle = 'rgba(0,0,0,0.15)';
+  rctx.fillRect(0, H*0.78, W, H*0.22);
+}
+
+// Start animation loop
+requestAnimationFrame(draw);
+
+/* OPTIONAL: small touch interactions: click to create a shooting star from left to heart */
+let shooting = null;
+window.addEventListener('click', (e)=> {
+  // start a short-lived shooting star from random edge to near heart center
+  const targetX = mainC.width/2 + rand(-60,60);
+  const targetY = mainC.height/3 + rand(-40,40);
+  shooting = {
+    x: rand(0, mainC.width*0.2),
+    y: rand(0, mainC.height*0.4),
+    tx: targetX, ty: targetY,
+    t: 0
+  };
+  spawnBurst(targetX, targetY);
+});
+
+function spawnBurst(cx,cy){
+  // create a small burst of particles at cx,cy
+  for(let i=0;i<40;i++){
+    particles.push({
+      x: cx + rand(-6,6),
+      y: cy + rand(-6,6),
+      baseX: cx, baseY: cy,
+      vx: rand(-1.8,1.8),
+      vy: rand(-1.8,1.8),
+      life: rand(8,18),
+      t: rand(0,TAU),
+      size: rand(0.8,2.8),
+      hue: rand(300,360),
+      alpha: 1,
+      wobble: 0.012
+    });
+  }
+}
+
+// optional loop to remove very old particles to avoid memory growth
+setInterval(()=>{
+  if(particles.length > 3000) {
+    particles.splice(0, particles.length - 2200);
+  }
+}, 5000);
+
+</script>
+</body>
+</html>
